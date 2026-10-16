@@ -1,0 +1,26 @@
+# Pipeline outputs and logs
+Outputs/
+Inputs/
+logs/
+slurm-*.out
+*.log
+
+# Data and intermediate files
+*.csv.gz
+*.parquet
+*.h5ad
+*.tif
+*.tiff
+*.npy
+*.npy.gz
+*.zarr/
+
+# Python / R
+__pycache__/
+*.pyc
+.Rhistory
+.RData
+Rplots.pdf
+
+# OS
+.DS_Store

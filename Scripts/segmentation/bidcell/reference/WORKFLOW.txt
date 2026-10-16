@@ -1,0 +1,96 @@
+# sc_ref workflow
+#
+# Goal:
+# Build BIDCell-compatible reference files and clean transcript files so that
+# reference genes and transcript genes stay aligned.
+#
+# ======================================================================
+# 1. Reference-building branch
+# ======================================================================
+#
+#   HCLA.h5ad
+#      |
+#      v
+#   [1] build_ref.py
+#       - select target cell types from h5ad
+#       - average expression by cell type
+#      |
+#      v
+#   lung_data.csv
+#
+#   NSCLC_*.txt or other atlas txt matrix
+#      |
+#      v
+#   [2] txt_to_csv.py
+#       - convert txt matrix to BIDCell-style csv
+#       - keep selected cell types
+#      |
+#      v
+#   NSCLC_*.csv
+#
+#   lung_data.csv + NSCLC_*.csv
+#      |
+#      v
+#   [3] merge.py
+#       - keep common genes only
+#       - merge references by rows
+#      |
+#      +---------------------------> common_genes.txt
+#      |
+#      v
+#   lung_ref.csv
+#
+#   raw spatial transcript csv
+#      |
+#      v
+#   [4] get_gene_list.py
+#       - extract unique genes measured in spatial data
+#      |
+#      v
+#   Merfish_gene.txt / gene_list.txt
+#
+#   lung_ref.csv + gene list txt
+#      |
+#      v
+#   [5] clean_scale_ref.py
+#       - keep genes present in transcript panel
+#       - scale each reference row to 0-1
+#      |
+#      v
+#   lung_ref_merfish.csv
+#      |
+#      v
+#   [6] find_markers.py
+#       - derive positive markers
+#       - derive negative markers
+#      |
+#      +---------------------------> merfish_lung_markers_pos.csv
+#      |
+#      +---------------------------> merfish_lung_markers_neg.csv
+#
+# ======================================================================
+# 2. Transcript-cleaning branch
+# ======================================================================
+#
+#   raw transcript csv
+#      |
+#      +------------------------------+
+#                                     |
+#   gene_to_filter.txt /              |
+#   target_to_filter.txt              |
+#      |                              |
+#      v                              v
+#   [7] clean_trans.py
+#       - remove unwanted genes/targets from transcript file
+#      |
+#      v
+#   filtered transcript csv
+#
+# ======================================================================
+# 3. Final files used by BIDCell yaml
+# ======================================================================
+#
+#   fp_ref         <- lung_ref_merfish.csv
+#   fp_pos_markers <- merfish_lung_markers_pos.csv
+#   fp_neg_markers <- merfish_lung_markers_neg.csv
+#   fp_transcripts <- filtered transcript csv
