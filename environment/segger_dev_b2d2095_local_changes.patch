@@ -1,0 +1,209 @@
+diff --git a/src/segger/cli/train_model.py b/src/segger/cli/train_model.py
+index 6ba2600..687193e 100644
+--- a/src/segger/cli/train_model.py
++++ b/src/segger/cli/train_model.py
+@@ -55,17 +55,18 @@ def train_model(args: Namespace):
+     from segger.training.train import LitSegger
+     from segger.training.segger_data_module import SeggerDataModule
+     from segger.prediction.predict_parquet import load_model
++    from segger.models.segger_model import Segger
++    from torch_geometric.nn import to_hetero
+     from lightning.pytorch.loggers import CSVLogger
+     from lightning import Trainer
+ 
+     logging.info("Done.")
+-uv a
+     # Load datasets
+     logging.info("Loading Xenium datasets...")
+     dm = SeggerDataModule(
+         data_dir=args.dataset_dir,
+-        batch_size=args.batch_size,  # Hard-coded batch size
+-        num_workers=args.num_workers,  # Hard-coded number of workers
++        batch_size=args.batch_size,
++        num_workers=args.num_workers,
+     )
+ 
+     dm.setup()
+@@ -74,44 +75,45 @@ uv a
+     # Initialize model
+     if args.pretrained_model_dir is not None:
+         logging.info("Loading pretrained model...")
+-        ls = load_model(args.pretrained_model_dir / "lightning_logs" / f"version_{args.model_version}" / "checkpoints")
++        version = args.pretrained_model_version if args.pretrained_model_version is not None else 0
++        ls = load_model(args.pretrained_model_dir / "lightning_logs" / f"version_{version}" / "checkpoints")
+     else:
+         logging.info("Creating new model...")
+         is_token_based = dm.train[0].x_dict["tx"].ndim == 1
+         if is_token_based:
+-            # if the model is token-based, the input is a 1D tensor of token indices
+             assert dm.train[0].x_dict["tx"].ndim == 1
+             assert dm.train[0].x_dict["tx"].dtype == torch.long
+-            num_tx_features = args.num_tx_tokens
+-            print("Using token-based embeddings as node features, number of tokens: ", num_tx_features)
++            inferred_tokens = int(dm.train[0].x_dict["tx"].max().item()) + 1
++            num_tx_tokens = max(args.num_tx_tokens, inferred_tokens)
++            print("Using token-based embeddings as node features, number of tokens:", num_tx_tokens)
+         else:
+-            # if the model is not token-based, the input is a 2D tensor of scRNAseq embeddings
+             assert dm.train[0].x_dict["tx"].ndim == 2
+             assert dm.train[0].x_dict["tx"].dtype == torch.float32
+             num_tx_features = dm.train[0].x_dict["tx"].shape[1]
+-            print("Using scRNAseq embeddings as node features, number of features: ", num_tx_features)
++            num_tx_tokens = args.num_tx_tokens
++            print("Using scRNAseq embeddings as node features, number of features:", num_tx_features)
+         num_bd_features = dm.train[0].x_dict["bd"].shape[1]
+-        print("Number of boundary node features: ", num_bd_features)
+-        ls = LitSegger(
+-            is_token_based=is_token_based,
+-            num_node_features={"tx": num_tx_features, "bd": num_bd_features},
++        print("Number of boundary node features:", num_bd_features)
++
++        base_model = Segger(
++            num_tx_tokens=num_tx_tokens,
+             init_emb=args.init_emb,
+             hidden_channels=args.hidden_channels,
+             out_channels=args.out_channels,
+             heads=args.heads,
+             num_mid_layers=args.num_mid_layers,
+-            aggr="sum",  # Hard-coded value
+-            learning_rate=args.learning_rate,
+         )
++        hetero_model = to_hetero(base_model, dm.train[0].metadata(), aggr="sum")
++        ls = LitSegger(model=hetero_model, learning_rate=args.learning_rate)
+     logging.info("Done.")
+ 
+     # Initialize the Lightning trainer
+     trainer = Trainer(
+-        accelerator=args.accelerator,  # Directly use the specified accelerator
+-        strategy=args.strategy,  # Hard-coded value
+-        precision=args.precision,  # Hard-coded value
+-        devices=args.devices,  # Hard-coded value
+-        max_epochs=args.max_epochs,  # Hard-coded value
++        accelerator=args.accelerator,
++        strategy=args.strategy,
++        precision=args.precision,
++        devices=args.devices,
++        max_epochs=args.max_epochs,
+         default_root_dir=args.models_dir,
+         logger=CSVLogger(args.models_dir),
+     )
+diff --git a/src/segger/data/parquet/_settings/merscope.yaml b/src/segger/data/parquet/_settings/merscope.yaml
+index 50d0d1c..46abc6f 100644
+--- a/src/segger/data/parquet/_settings/merscope.yaml
++++ b/src/segger/data/parquet/_settings/merscope.yaml
+@@ -23,6 +23,7 @@ transcripts:
+     - "global_z"
+     - "gene"
+     - "cell_id"
++    - "EntityID"
+     - "overlaps_nucleus"
+     - "transcript_id"
+ 
+diff --git a/src/segger/data/parquet/pyg_dataset.py b/src/segger/data/parquet/pyg_dataset.py
+index 4979886..6fc1161 100644
+--- a/src/segger/data/parquet/pyg_dataset.py
++++ b/src/segger/data/parquet/pyg_dataset.py
+@@ -65,14 +65,20 @@ class STPyGDataset(InMemoryDataset):
+         """
+         filepath = Path(self.processed_dir) / self.processed_file_names[idx]
+         data = torch.load(filepath)
++        belongs_store = data["tx", "belongs", "bd"]
++
++        # Some tiles are intentionally emitted as inference-only/test-only samples when
++        # no supervision edges can be constructed. Prediction only needs edge_index_dict,
++        # but PyG batching requires a consistent attribute set across samples.
++        if not hasattr(belongs_store, "edge_label_index"):
++            belongs_store.edge_label_index = torch.empty((2, 0), dtype=torch.long)
++        if not hasattr(belongs_store, "edge_label"):
++            belongs_store.edge_label = torch.empty((0,), dtype=torch.float32)
++
+         # this is an issue in PyG's RandomLinkSplit, dimensions are not consistent if there is only one edge in the graph
+-        if hasattr(data["tx", "belongs", "bd"], "edge_label_index"):
+-            if data["tx", "belongs", "bd"].edge_label_index.dim() == 1:
+-                data["tx", "belongs", "bd"].edge_label_index = data[
+-                    "tx", "belongs", "bd"
+-                ].edge_label_index.unsqueeze(1)
+-                data["tx", "belongs", "bd"].edge_label = data[
+-                    "tx", "belongs", "bd"
+-                ].edge_label.unsqueeze(0)
+-            assert data["tx", "belongs", "bd"].edge_label_index.dim() == 2
++        if hasattr(belongs_store, "edge_label_index"):
++            if belongs_store.edge_label_index.dim() == 1:
++                belongs_store.edge_label_index = belongs_store.edge_label_index.unsqueeze(1)
++                belongs_store.edge_label = belongs_store.edge_label.unsqueeze(0)
++            assert belongs_store.edge_label_index.dim() == 2
+         return data
+diff --git a/src/segger/data/utils.py b/src/segger/data/utils.py
+index e3159b0..822566a 100644
+--- a/src/segger/data/utils.py
++++ b/src/segger/data/utils.py
+@@ -167,12 +167,21 @@ def create_anndata(
+     # Filter out unassigned cells
+     df_filtered = df[df[cell_id_col].astype(str) != "UNASSIGNED"]
+ 
++    gene_col = "feature_name" if "feature_name" in df.columns else "gene"
++
++    if "x_location" in df.columns and "y_location" in df.columns:
++        x_col, y_col = "x_location", "y_location"
++    elif "global_x" in df.columns and "global_y" in df.columns:
++        x_col, y_col = "global_x", "global_y"
++    else:
++        raise KeyError(
++            "create_anndata requires either x_location/y_location or global_x/global_y columns."
++        )
++
+     # Create pivot table for gene expression counts per cell
+-    pivot_df = df_filtered.rename(
+-        columns={cell_id_col: "cell", "feature_name": "gene"}
+-    )[["cell", "gene"]].pivot_table(
+-        index="cell", columns="gene", aggfunc="size", fill_value=0
+-    )
++    pivot_df = df_filtered.rename(columns={cell_id_col: "cell", gene_col: "gene"})[
++        ["cell", "gene"]
++    ].pivot_table(index="cell", columns="gene", aggfunc="size", fill_value=0)
+     pivot_df = pivot_df[pivot_df.sum(axis=1) >= min_transcripts]
+ 
+     # Summarize cell metrics
+@@ -180,17 +189,15 @@ def create_anndata(
+     for cell_id, cell_data in df_filtered.groupby(cell_id_col):
+         if len(cell_data) < min_transcripts:
+             continue
+-        cell_convex_hull = ConvexHull(
+-            cell_data[["x_location", "y_location"]], qhull_options="QJ"
+-        )
++        cell_convex_hull = ConvexHull(cell_data[[x_col, y_col]], qhull_options="QJ")
+         cell_area = cell_convex_hull.area
+         if cell_area < min_cell_area or cell_area > max_cell_area:
+             continue
+         cell_summary.append(
+             {
+                 "cell": cell_id,
+-                "cell_centroid_x": cell_data["x_location"].mean(),
+-                "cell_centroid_y": cell_data["y_location"].mean(),
++                "cell_centroid_x": cell_data[x_col].mean(),
++                "cell_centroid_y": cell_data[y_col].mean(),
+                 "cell_area": cell_area,
+             }
+         )
+@@ -220,10 +227,10 @@ def create_anndata(
+         var_df = var_df.set_index("gene")
+ 
+     # Compute total assigned and unassigned transcript counts for each gene
+-    assigned_counts = df_filtered.groupby("feature_name")["feature_name"].count()
++    assigned_counts = df_filtered.groupby(gene_col)[gene_col].count()
+     unassigned_counts = (
+         df[df[cell_id_col].astype(str) == "UNASSIGNED"]
+-        .groupby("feature_name")["feature_name"]
++        .groupby(gene_col)[gene_col]
+         .count()
+     )
+     var_df["total_assigned"] = var_df.index.map(assigned_counts).fillna(0).astype(int)
+diff --git a/src/segger/training/segger_data_module.py b/src/segger/training/segger_data_module.py
+index 6fe2aca..15aa85f 100644
+--- a/src/segger/training/segger_data_module.py
++++ b/src/segger/training/segger_data_module.py
+@@ -41,3 +41,4 @@ class SeggerDataModule(LightningDataModule):
+     # TODO: Add documentation
+     def val_dataloader(self):
+         return DataLoader(self.val, shuffle=False, **self.loader_kwargs)
++

@@ -31,6 +31,7 @@ Scripts/             pipeline entry points and Slurm submission scripts (see Scr
     proseg/            Proseg run script
     segger/            Segger data preparation, training, and inference scripts
 Extra/               cell-type marker tables used for annotation and marker purity
+environment/         conda, Julia, and R environment exports (see environment/README.md)
 ```
 
 ## Data
@@ -86,9 +87,12 @@ The MERSCOPE analysis uses the region x, y in [550, 800] um (global coordinates)
   ignores the `model_type` and `channels` arguments.
 - **Proseg.** `run_proseg.sh` contains the Xenium command; the MERSCOPE command (`--merscope`,
   `--voxel-layers 7`) is kept below it as a comment.
-- **Segger** was run from a clone of `segger_dev` (version 0.1.0, commit `b2d2095`).
+- **Segger** was run from a clone of `segger_dev` (version 0.1.0, commit `b2d2095`) with local
+  changes, which are provided as a patch in `environment/`.
 
 ## Software
+
+Full environment exports and installation steps are in `environment/`.
 
 | Software | Version |
 |---|---|
